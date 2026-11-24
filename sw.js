@@ -1,5 +1,5 @@
 /* LIGA — service worker: permite instalar a app e abri-la mesmo com rede fraca. */
-const CACHE = 'liga-v6';
+const CACHE = 'liga-v7';
 const FICHEIROS = ['./', './index.html', './app.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './logo-liga.jpg', './logo-mao.png'];
 
 self.addEventListener('install', (e) => {

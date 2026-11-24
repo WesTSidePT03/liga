@@ -152,27 +152,36 @@ const slotCam = (chave, espelho, rotulo, fonte) =>
   `<div class="cam-slot${espelho ? ' espelho' : ''}" data-cam-slot="${chave}" data-fonte="${fonte || 'local'}"></div>${rotulo ? `<span class="cam-rotulo">${rotulo}</span>` : ''}`;
 
 /* =================================================================
-   LIGAÇÃO REAL ENTRE APARELHOS (PeerJS)
-   A consola do intérprete fica disponível com um código (ex.: K7M2QX).
-   O telemóvel do utilizador liga-se a esse código: o pedido entra na fila
-   da consola e, ao atender, abre-se uma videochamada com as câmaras dos
-   dois lados e troca de mensagens. Sem internet, ou sem código, a app
-   funciona em modo de demonstração.
+   LIGAÇÃO REAL ENTRE APARELHOS
+   - Pedidos, mensagens e avisos passam por um serviço público de
+     mensagens (MQTT sobre WebSocket seguro), que funciona em qualquer
+     rede porque os dois aparelhos só falam com o servidor.
+   - O vídeo é uma ligação direta (WebRTC, via PeerJS, com servidores
+     STUN/TURN). Se a rede a bloquear, a chamada continua por mensagens.
+   A consola fica disponível com um código (ex.: K7M2QX); o telemóvel
+   liga-se a esse código. Sem internet, a app funciona em demonstração.
    ================================================================= */
 const LS = {
   get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
   set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* sem armazenamento */ } }
 };
-const PREFIXO = 'liga-pt-consola-';
 const ALFABETO = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const novoCodigo = () => Array.from({ length: 6 }, () => ALFABETO[Math.floor(Math.random() * ALFABETO.length)]).join('');
 const limpaCodigo = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+const aleatorio = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+const topico = (cod) => 'liga-pt/v2/' + cod;
+const PEER_CFG = { config: { iceServers: [
+  { urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }, { urls: 'stun:global.stun.twilio.com:3478' },
+  { urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp' }
+] } };
 
 const real = {
-  meuCodigo: '', peerC: null, estadoC: 'off', erroC: '', conns: {},
-  codigo: limpaCodigo(LS.get('liga.codigo')), peerU: null, estadoU: 'off', erroU: '', conn: null,
+  meuCodigo: '', redeC: null, peerC: null, estadoC: 'off', erroC: '',
+  codigo: limpaCodigo(LS.get('liga.codigo')), uid: aleatorio(), redeU: null, peerU: null, estadoU: 'off', erroU: '', consolaOnline: null,
   chamada: null, remoto: null, qr: {}
 };
+const redeDisponivel = () => !!(window.mqtt && typeof window.mqtt.connect === 'function');
 const peerDisponivel = () => typeof window.Peer === 'function';
 const sobreHttps = () => location.protocol === 'https:';
 
@@ -183,50 +192,79 @@ function streamVazio() {
 }
 const textoSeguro = (v, max) => String(v == null ? '' : v).slice(0, max);
 
+/* liga-se aos dois servidores ao mesmo tempo (se um falhar, o outro serve); mensagens repetidas são ignoradas */
+function criaRede(topicos, aoReceber, will, aoLigar) {
+  const r = { clientes: [], vistos: new Set(), ligado: false, onEstado: null };
+  const atualiza = () => { const l = r.clientes.some((c) => c.connected); if (l !== r.ligado) { r.ligado = l; if (r.onEstado) r.onEstado(); } };
+  BROKERS.forEach((url) => {
+    let c;
+    try { c = window.mqtt.connect(url, { clientId: 'liga_' + aleatorio(), clean: true, connectTimeout: 10000, reconnectPeriod: 3000, keepalive: 30, will }); } catch (e) { return; }
+    c.on('connect', () => { c.subscribe(topicos, { qos: 1 }); if (aoLigar) aoLigar(c); atualiza(); });
+    c.on('close', atualiza); c.on('offline', atualiza); c.on('error', () => {});
+    c.on('message', (t, payload) => {
+      let d; try { d = JSON.parse(payload.toString()); } catch (e) { return; }
+      if (!d || typeof d !== 'object' || !d.mid || r.vistos.has(d.mid)) return;
+      r.vistos.add(d.mid); aoReceber(t, d);
+    });
+    r.clientes.push(c);
+  });
+  r.envia = (t, obj, opts) => {
+    const txt = JSON.stringify(Object.assign({ mid: aleatorio() }, obj));
+    r.clientes.forEach((c) => { if (c.connected) { try { c.publish(t, txt, Object.assign({ qos: 1 }, opts || {})); } catch (e) { /* tenta no outro */ } } });
+  };
+  r.fecha = () => r.clientes.forEach((c) => { try { c.end(true); } catch (e) { /* já fechado */ } });
+  return r;
+}
+
 /* ---------- lado do intérprete ---------- */
 function iniciaConsolaReal() {
-  if (!peerDisponivel() || real.peerC) return;
+  if (!redeDisponivel() || real.redeC) return;
   if (!real.meuCodigo) { real.meuCodigo = limpaCodigo(LS.get('liga.meuCodigo')) || novoCodigo(); LS.set('liga.meuCodigo', real.meuCodigo); }
+  const b = topico(real.meuCodigo);
   real.estadoC = 'a-ligar'; real.erroC = '';
-  const p = new window.Peer(PREFIXO + real.meuCodigo);
-  real.peerC = p;
-  p.on('open', () => { real.estadoC = 'pronto'; desenha(); });
-  p.on('connection', ligaConnC);
-  p.on('disconnected', () => { if (real.peerC === p && !p.destroyed) { real.estadoC = 'a-ligar'; try { p.reconnect(); } catch (e) { /* tenta mais tarde */ } desenha(); } });
-  p.on('error', (e) => {
-    if (real.peerC !== p) return;
-    if (e.type === 'unavailable-id') { real.estadoC = 'erro'; real.erroC = 'Este código já está aberto noutra janela. Feche-a ou gere um código novo.'; }
-    else if (['network', 'server-error', 'socket-error', 'socket-closed', 'browser-incompatible'].includes(e.type)) { real.estadoC = 'erro'; real.erroC = 'Sem ligação ao serviço de chamadas. Verifique a internet.'; }
-    desenha();
-  });
+  const will = { topic: b + '/estado', payload: JSON.stringify({ mid: 'off-' + aleatorio(), online: false }), retain: true, qos: 1 };
+  const rede = criaRede([b + '/consola'], (t, d) => recebeC(d), will,
+    (c) => c.publish(b + '/estado', JSON.stringify({ mid: 'on-' + aleatorio(), online: true }), { retain: true, qos: 1 }));
+  real.redeC = rede;
+  rede.onEstado = () => { if (real.redeC !== rede) return; real.estadoC = rede.ligado ? 'pronto' : 'a-ligar'; if (rede.ligado) real.erroC = ''; desenha(); };
+  setTimeout(() => { if (real.redeC === rede && !rede.ligado) { real.estadoC = 'erro'; real.erroC = 'Sem ligação ao serviço de mensagens. Verifique a internet ou experimente outra rede.'; desenha(); } }, 15000);
+  if (peerDisponivel() && !real.peerC) {
+    const p = new window.Peer(PEER_CFG);
+    real.peerC = p;
+    p.on('error', () => {});
+    p.on('disconnected', () => { if (real.peerC === p && !p.destroyed) { try { p.reconnect(); } catch (e) { /* tenta mais tarde */ } } });
+  }
 }
 function novoCodigoConsola() {
-  if (real.peerC) { try { real.peerC.destroy(); } catch (e) { /* já fechado */ } }
-  real.peerC = null; real.conns = {};
+  if (real.redeC) { try { real.redeC.envia(topico(real.meuCodigo) + '/estado', { online: false }, { retain: true }); } catch (e) { /* ignora */ } setTimeout(((r) => () => r.fecha())(real.redeC), 500); }
+  real.redeC = null;
   C.fila = C.fila.filter((x) => !x.real);
   real.meuCodigo = novoCodigo(); LS.set('liga.meuCodigo', real.meuCodigo);
   iniciaConsolaReal();
 }
-function ligaConnC(conn) {
-  const id = 'r-' + conn.peer;
-  conn.on('data', (d) => {
-    if (!d || typeof d !== 'object') return;
-    if (d.tipo === 'pedido') {
-      real.conns[conn.peer] = conn;
-      if (!C.fila.some((x) => x.id === id) && !(C.ativo && C.ativo.id === id)) {
-        C.fila.unshift({ id, real: true, peerId: conn.peer, nome: textoSeguro(d.nome, 40) || 'Utilizador da app', destino: textoSeguro(d.destino, 40) || 'Outro número', motivo: 'Pedido feito na app', esperaSeg: 0, primeira: false });
-        C.ultimoNovo = C.tick;
-      }
-    } else if (d.tipo === 'msg') {
-      if (C.ativo && C.ativo.id === id) { C.msgsUser.push({ eu: false, texto: textoSeguro(d.texto, 500) }); C.aEscrever = false; }
-    } else if (d.tipo === 'cancelar') {
-      C.fila = C.fila.filter((x) => x.id !== id);
-    } else if (d.tipo === 'fim') {
-      fimConsolaReal(id);
-    }
-    desenha();
-  });
-  conn.on('close', () => { C.fila = C.fila.filter((x) => x.id !== id); delete real.conns[conn.peer]; fimConsolaReal(id); desenha(); });
+function recebeC(d) {
+  const de = textoSeguro(d.de, 40);
+  if (!de) return;
+  const id = 'r-' + de;
+  const ativo = C.ativo && C.ativo.id === id;
+  if (d.tipo === 'pedido') {
+    const item = C.fila.find((x) => x.id === id);
+    if (item) { item.ultimo = Date.now(); if (d.peerId) item.peerId = textoSeguro(d.peerId, 80); }
+    else if (!ativo) {
+      C.fila.unshift({ id, real: true, uid: de, peerId: textoSeguro(d.peerId, 80), nome: textoSeguro(d.nome, 40) || 'Utilizador da app', destino: textoSeguro(d.destino, 40) || 'Outro número', motivo: 'Pedido feito na app', esperaSeg: 0, primeira: false, ultimo: Date.now() });
+      C.ultimoNovo = C.tick;
+    } else if (d.peerId && !C.ativo.peerId) { C.ativo.peerId = textoSeguro(d.peerId, 80); }
+    if (real.redeC) real.redeC.envia(topico(real.meuCodigo) + '/u/' + de, { tipo: ativo ? 'atendido' : 'recebido' });
+  } else if (d.tipo === 'msg') {
+    if (ativo) { C.msgsUser.push({ eu: false, texto: textoSeguro(d.texto, 500) }); C.aEscrever = false; }
+  } else if (d.tipo === 'cancelar') {
+    C.fila = C.fila.filter((x) => x.id !== id);
+  } else if (d.tipo === 'fim') {
+    fimConsolaReal(id);
+  } else if (d.tipo === 'peer' && ativo && d.peerId) {
+    C.ativo.peerId = textoSeguro(d.peerId, 80);
+  }
+  desenha();
 }
 function fechaChamadaReal() {
   if (real.chamada) { try { real.chamada.close(); } catch (e) { /* já fechada */ } }
@@ -235,60 +273,97 @@ function fechaChamadaReal() {
 function fimConsolaReal(id) {
   if (!(C.ativo && C.ativo.id === id && C.fase === 'chamada')) return;
   fechaChamadaReal();
-  limpa(C, 'v', 'r');
+  limpa(C, 'v', 'r', 'video');
   C.fase = 'fecho'; C.emergencia = false; C.aEscrever = false; cam.C = false; libertaCamara();
 }
-const connAtivaC = () => (C.ativo && C.ativo.real ? real.conns[C.ativo.peerId] : null);
-function enviaC(obj) { const c = connAtivaC(); if (c && c.open) { try { c.send(obj); } catch (e) { /* ligação caiu */ } } }
+function enviaC(obj) {
+  if (!(C.ativo && C.ativo.real && real.redeC)) return;
+  real.redeC.envia(topico(real.meuCodigo) + '/u/' + C.ativo.uid, obj);
+}
+/* vídeo: o intérprete liga para o telemóvel; se não ligar em 20 s, avisa e continua por mensagens */
+function ligaVideoC(c) {
+  if (!(real.peerC && c.peerId && C.ativo === c && C.fase === 'chamada')) return;
+  fechaChamadaReal();
+  const call = real.peerC.call(c.peerId, cam.stream || streamVazio());
+  if (!call) return;
+  real.chamada = call;
+  call.on('stream', (s) => { if (real.chamada === call) { real.remoto = s; C.semVideo = false; desenha(); } });
+  call.on('close', () => { if (real.chamada === call) { real.chamada = null; real.remoto = null; desenha(); } });
+  call.on('error', () => {});
+  limpa(C, 'video');
+  C.t.video = setTimeout(() => { if (C.ativo === c && C.fase === 'chamada' && !real.remoto) { C.semVideo = true; desenha(); } }, 20000);
+}
 
 /* ---------- lado do utilizador ---------- */
 function iniciaUtilizadorReal() {
-  if (!peerDisponivel() || real.peerU || !real.codigo) return;
-  real.estadoU = 'a-ligar'; real.erroU = '';
-  const p = new window.Peer();
-  real.peerU = p;
-  p.on('open', () => { real.estadoU = 'pronto'; desenha(); });
-  p.on('call', atendeChamadaU);
-  p.on('disconnected', () => { if (real.peerU === p && !p.destroyed) { try { p.reconnect(); } catch (e) { /* tenta mais tarde */ } } });
-  p.on('error', (e) => {
-    if (real.peerU !== p) return;
-    if (e.type === 'peer-unavailable') {
-      real.erroU = 'A consola com o código ' + real.codigo + ' não está aberta. Confirme o código ou peça ao intérprete para abrir a consola.';
-      if (U.ecra === 'ligar') { U.ecra = 'app'; U.tab = 'inicio'; U.real = false; }
-    } else if (['network', 'server-error', 'socket-error', 'socket-closed', 'browser-incompatible'].includes(e.type)) {
-      real.estadoU = 'erro'; real.erroU = 'Sem ligação ao serviço de chamadas. Verifique a internet.';
-    }
-    desenha();
-  });
+  if (!redeDisponivel() || real.redeU || !real.codigo) return;
+  const b = topico(real.codigo);
+  real.estadoU = 'a-ligar'; real.erroU = ''; real.consolaOnline = null;
+  const rede = criaRede([b + '/u/' + real.uid, b + '/estado'], (t, d) => recebeU(t, d));
+  real.redeU = rede;
+  rede.onEstado = () => { if (real.redeU !== rede) return; real.estadoU = rede.ligado ? 'pronto' : 'a-ligar'; if (rede.ligado) real.erroU = ''; desenha(); };
+  setTimeout(() => { if (real.redeU === rede && !rede.ligado) { real.estadoU = 'erro'; real.erroU = 'Sem ligação ao serviço de mensagens. Verifique a internet ou experimente outra rede.'; desenha(); } }, 15000);
+  if (peerDisponivel() && !real.peerU) {
+    const p = new window.Peer(PEER_CFG);
+    real.peerU = p;
+    p.on('open', (id) => { if (U.real) enviaU({ tipo: 'peer', peerId: id }); });
+    p.on('call', atendeChamadaU);
+    p.on('error', () => {});
+    p.on('disconnected', () => { if (real.peerU === p && !p.destroyed) { try { p.reconnect(); } catch (e) { /* tenta mais tarde */ } } });
+  }
 }
 function mudaCodigoUtilizador(cod) {
   real.codigo = limpaCodigo(cod); LS.set('liga.codigo', real.codigo);
-  if (real.peerU) { try { real.peerU.destroy(); } catch (e) { /* já fechado */ } }
-  real.peerU = null; real.estadoU = 'off'; real.erroU = '';
+  if (real.redeU) { const r = real.redeU; setTimeout(() => r.fecha(), 300); }
+  real.redeU = null; real.estadoU = 'off'; real.erroU = ''; real.consolaOnline = null;
   iniciaUtilizadorReal();
 }
-const modoRealU = () => !!(real.codigo && real.peerU && real.estadoU === 'pronto');
-function enviaU(obj) { if (real.conn && real.conn.open) { try { real.conn.send(obj); } catch (e) { /* ligação caiu */ } } }
+const modoRealU = () => !!(real.codigo && real.redeU && real.estadoU === 'pronto');
+function enviaU(obj) {
+  if (!(real.redeU && real.codigo)) return;
+  real.redeU.envia(topico(real.codigo) + '/consola', Object.assign({ de: real.uid }, obj));
+}
+function recebeU(t, d) {
+  if (t.slice(-7) === '/estado') { real.consolaOnline = !!d.online; desenha(); return; }
+  if (!U.real) return;
+  if (d.tipo === 'recebido') { U.entregue = true; }
+  else if (d.tipo === 'atendido') {
+    U.entregue = true;
+    if (!U.atendido) {
+      U.atendido = true;
+      limpa(U, 'pedido');
+      // passa já para o ecrã da chamada (mensagens funcionam mesmo sem vídeo)
+      U.ecra = 'chamada'; U.seg = 0; U.legendas = false;
+      obterCamara().then((ok) => { if (ok) cam.U = true; desenha(); });
+      limpa(U, 'video');
+      U.t.video = setTimeout(() => { if (U.real && U.ecra === 'chamada' && !real.remoto) { U.semVideo = true; desenha(); } }, 20000);
+    }
+  }
+  else if (d.tipo === 'msg') { U.msgs.push({ eu: false, texto: textoSeguro(d.texto, 500) }); U.interpreteEscreve = false; }
+  else if (d.tipo === 'fim' && (U.ecra === 'chamada' || U.ecra === 'ligar')) { terminaU(false); }
+  desenha();
+}
 
 async function atendeChamadaU(call) {
   if (!(U.real && (U.ecra === 'ligar' || U.ecra === 'chamada'))) { try { call.close(); } catch (e) { /* ignora */ } return; }
+  if (real.chamada && real.chamada !== call) { try { real.chamada.close(); } catch (e) { /* ignora */ } }
   real.chamada = call;
-  if (await obterCamara()) cam.U = true;
+  if (!cam.stream && await obterCamara()) cam.U = true;
   call.answer(cam.stream || streamVazio());
-  call.on('stream', (s) => { real.remoto = s; desenha(); });
-  call.on('close', () => { if (U.real && U.ecra === 'chamada') terminaU(false); desenha(); });
-  U.ecra = 'chamada'; U.seg = 0; U.legendas = false;
+  call.on('stream', (s) => { if (real.chamada === call) { real.remoto = s; U.semVideo = false; desenha(); } });
+  call.on('close', () => { if (real.chamada === call) { real.chamada = null; real.remoto = null; desenha(); } });
+  call.on('error', () => {});
+  if (U.ecra !== 'chamada') { U.ecra = 'chamada'; U.seg = 0; U.legendas = false; }
   desenha();
 }
 function terminaU(avisar) {
   if (U.real) {
     if (avisar) enviaU({ tipo: 'fim' });
     fechaChamadaReal();
-    if (real.conn) { const c = real.conn; real.conn = null; setTimeout(() => { try { c.close(); } catch (e) { /* ignora */ } }, 300); }
   }
-  limpa(U, 'r');
+  limpa(U, 'r', 'pedido', 'video');
   U.historico.unshift({ destino: U.destino, data: 'Hoje · agora', dur: fmt(U.seg) });
-  U.ecra = 'fim'; U.chat = false; U.interpreteEscreve = false; U.real = false;
+  U.ecra = 'fim'; U.chat = false; U.interpreteEscreve = false; U.real = false; U.semVideo = false;
   cam.U = false; libertaCamara();
 }
 
@@ -330,19 +405,10 @@ const A = {
     Object.assign(U, { ecra: 'ligar', destino: nome, fila: 2, seg: 0, legIdx: 0, chat: false, nota: 0, tags: {}, interpreteEscreve: false, real: false });
     U.msgs = [{ eu: false, texto: 'Olá! Pode escrever aqui se preferir confirmar algum número ou nome.' }];
     if (modoRealU()) {
-      U.real = true; real.erroU = '';
-      const conn = real.peerU.connect(PREFIXO + real.codigo, { reliable: true });
-      real.conn = conn;
-      conn.on('open', () => { try { conn.send({ tipo: 'pedido', destino: nome, nome: U.nome || '' }); } catch (e) { /* ignora */ } });
-      conn.on('data', (d) => {
-        if (!d || typeof d !== 'object' || real.conn !== conn) return;
-        if (d.tipo === 'atendido') { U.atendido = true; }
-        else if (d.tipo === 'msg') { U.msgs.push({ eu: false, texto: textoSeguro(d.texto, 500) }); U.interpreteEscreve = false; }
-        else if (d.tipo === 'fim' && (U.ecra === 'chamada' || U.ecra === 'ligar')) { terminaU(false); }
-        desenha();
-      });
-      conn.on('close', () => { if (real.conn === conn && U.real && (U.ecra === 'chamada' || U.ecra === 'ligar')) { terminaU(false); desenha(); } });
-      U.atendido = false;
+      Object.assign(U, { real: true, entregue: false, atendido: false, semVideo: false });
+      real.erroU = '';
+      const pedido = () => { if (U.real && U.ecra === 'ligar' && !U.atendido) { enviaU({ tipo: 'pedido', destino: nome, nome: U.nome || '', peerId: real.peerU && real.peerU.id }); U.t.pedido = setTimeout(pedido, 3000); } };
+      pedido();
       return;
     }
     U.t.a = setTimeout(() => { U.fila = 1; desenha(); }, 1300);
@@ -350,7 +416,8 @@ const A = {
   },
   uCancelar() {
     limpa(U, 'a', 'b');
-    if (U.real) { enviaU({ tipo: 'cancelar' }); const c = real.conn; real.conn = null; fechaChamadaReal(); setTimeout(() => { try { c && c.close(); } catch (e) { /* ignora */ } }, 300); }
+    limpa(U, 'pedido', 'video');
+    if (U.real) { enviaU({ tipo: 'cancelar' }); fechaChamadaReal(); }
     U.real = false; U.ecra = 'app'; U.tab = 'inicio'; cam.U = false; libertaCamara();
   },
   uAgendar() { U.ecra = 'agendar'; },
@@ -385,15 +452,17 @@ const A = {
     if (!c) return;
     Object.assign(C, { fase: 'chamada', ativo: c, voz: 'idle', mudo: false, seg: 0, trIdx: 0, msgsUser: [], supervisor: false, reforco: false, passos: {}, rascunho: '', aEscrever: false, notas: '' });
     C.fila = C.fila.filter((x) => x.id !== c.id);
-    if (c.real && real.peerC) {
+    C.semVideo = false;
+    if (c.real) {
       enviaC({ tipo: 'atendido' });
       desenha();
       if (await obterCamara()) cam.C = true;
       if (!(C.ativo === c && C.fase === 'chamada')) return;
-      const call = real.peerC.call(c.peerId, cam.stream || streamVazio());
-      real.chamada = call;
-      call.on('stream', (s) => { if (real.chamada === call) { real.remoto = s; desenha(); } });
-      call.on('close', () => { if (real.chamada === call) { fimConsolaReal(c.id); desenha(); } });
+      ligaVideoC(c);
+      // se o telemóvel ainda não tinha o vídeo pronto, tenta de novo quando chegar o identificador
+      limpa(C, 'repete');
+      const repete = (n) => { C.t.repete = setTimeout(() => { if (C.ativo === c && C.fase === 'chamada' && !real.remoto && n > 0) { ligaVideoC(c); repete(n - 1); } }, 6000); };
+      repete(3);
     }
   },
   cLigar() { C.voz = 'ringing'; limpa(C, 'v'); C.t.v = setTimeout(() => { if (C.voz === 'ringing') { C.voz = 'on'; desenha(); } }, 1500); },
@@ -401,7 +470,7 @@ const A = {
   cEspera() { C.voz = C.voz === 'hold' ? 'on' : 'hold'; },
   cTerminar() {
     if (C.ativo && C.ativo.real) { enviaC({ tipo: 'fim' }); fechaChamadaReal(); }
-    limpa(C, 'v', 'r'); C.fase = 'fecho'; C.emergencia = false; C.aEscrever = false; cam.C = false; libertaCamara();
+    limpa(C, 'v', 'r', 'video', 'repete'); C.fase = 'fecho'; C.emergencia = false; C.aEscrever = false; cam.C = false; libertaCamara();
   },
   cNovoCodigo() { novoCodigoConsola(); aviso('Novo código criado'); },
   async cCamara() { await alternaCamara('C'); desenha(); },
@@ -615,8 +684,10 @@ function uInicio() {
 
 function estadoLigacaoU() {
   let cor = 'var(--linha-forte)', fundo = '#EEF0EF', texto = 'Modo demonstração · ligue-se a um intérprete no Perfil';
-  if (real.codigo && !peerDisponivel()) { texto = 'Sem internet · modo demonstração'; }
-  else if (real.codigo && real.estadoU === 'pronto') { cor = 'var(--verde)'; fundo = 'var(--acc-claro)'; texto = 'Ligado à consola ' + real.codigo + ' · chamadas reais'; }
+  if (real.codigo && !redeDisponivel()) { texto = 'Sem internet · modo demonstração'; }
+  else if (real.codigo && real.estadoU === 'pronto' && real.consolaOnline === false) { cor = '#E8A317'; fundo = 'var(--ambar-claro)'; texto = 'A consola ' + real.codigo + ' está fechada · abra-a no PC'; }
+  else if (real.codigo && real.estadoU === 'pronto' && real.consolaOnline) { cor = 'var(--verde)'; fundo = 'var(--acc-claro)'; texto = 'Ligado à consola ' + real.codigo + ' · intérprete online'; }
+  else if (real.codigo && real.estadoU === 'pronto') { cor = 'var(--verde)'; fundo = 'var(--acc-claro)'; texto = 'Ligado · à procura da consola ' + real.codigo + '…'; }
   else if (real.codigo && real.estadoU === 'a-ligar') { cor = '#E8A317'; fundo = 'var(--ambar-claro)'; texto = 'A ligar ao serviço de chamadas…'; }
   else if (real.codigo && real.estadoU === 'erro') { cor = 'var(--vermelho)'; fundo = '#FDECEA'; texto = 'Sem ligação · modo demonstração'; }
   return `
@@ -735,7 +806,7 @@ function uLigar() {
       <h1 style="font-size:28px;line-height:1.2">A ligar a um intérprete</h1>
       <p style="font-size:17px;color:var(--suave)">Destino: <strong style="color:var(--tinta)">${esc(U.destino)}</strong></p>
     </div>
-    <div role="status" style="padding:10px 20px;border-radius:999px;background:#fff;border:1px solid var(--linha);font-size:16px;font-weight:700">${U.real ? (U.atendido ? 'O intérprete atendeu — a abrir o vídeo…' : 'À espera que o intérprete atenda…') : U.fila > 1 ? 'Posição na fila: ' + U.fila : 'É o próximo — a ligar…'}</div>
+    <div role="status" style="padding:10px 20px;border-radius:999px;background:#fff;border:1px solid var(--linha);font-size:16px;font-weight:700">${U.real ? (U.atendido ? 'O intérprete atendeu — a abrir o vídeo…' : U.entregue ? '✓ Pedido entregue · à espera que o intérprete atenda…' : real.consolaOnline === false ? 'A consola ' + esc(real.codigo) + ' está fechada' : 'A enviar o pedido à consola…') : U.fila > 1 ? 'Posição na fila: ' + U.fila : 'É o próximo — a ligar…'}</div>
     ${se(U.real, '<span class="etq">Chamada real · consola ' + esc(real.codigo) + '</span>')}
     <div style="width:100%;padding:16px;border-radius:16px;background:#fff;border:1px solid var(--linha);font-size:15px;line-height:1.45;color:var(--suave);text-align:left">Dica: tenha à mão documentos ou números de que possa precisar (cartão de cidadão, número de utente, NIF).</div>
     <button class="btn btn-pill" style="min-height:52px;padding:0 32px;border:2px solid var(--tinta);background:transparent;font-size:17px" ${acao('uCancelar')}>Cancelar</button>
@@ -759,7 +830,7 @@ function uChamada() {
       ${U.real ? (real.remoto ? slotCam('u-main', false, '', 'remoto') : '') : camLigada('C') ? slotCam('u-main', false, '') : ''}
       <div style="display:flex;flex-direction:column;align-items:center;gap:12px;color:#B9C7C4;text-align:center;padding:0 24px">
         <svg role="img" aria-label="Vídeo do intérprete" width="72" height="72" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">${ICONES.pessoa}</svg>
-        <span style="font-size:15px">${U.real ? 'A receber o vídeo do intérprete…' : 'O intérprete ainda não ligou a câmara'}</span>
+        <span style="font-size:15px;line-height:1.45">${U.real ? (U.semVideo ? 'O vídeo não ligou nesta rede. Podem continuar por mensagens (botão de mensagens em baixo).' : 'A ligar o vídeo do intérprete…') : 'O intérprete ainda não ligou a câmara'}</span>
       </div>
       <div style="position:absolute;right:14px;top:14px;width:100px;height:136px;border-radius:16px;overflow:hidden;background:var(--escuro-3);border:2px solid var(--escuro);display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:6px;padding-bottom:8px;font-size:13px;color:#DCE5E3">
         ${camLigada('U') ? slotCam('u-pip', true, 'Você') : ic('semVideo', 26) + (cam.aPedir ? 'A ligar…' : 'Câmara desligada')}
@@ -910,7 +981,7 @@ function qrPara(texto) {
 }
 
 function cartaoLigacaoC() {
-  if (!peerDisponivel()) {
+  if (!redeDisponivel()) {
     return '<div class="caixa" style="padding:16px;border-radius:14px;font-size:14px;line-height:1.45;color:var(--suave)"><strong style="color:var(--tinta)">Modo demonstração.</strong> Sem internet não é possível receber chamadas reais do telemóvel.</div>';
   }
   const est = { pronto: ['var(--verde)', 'Pronta a receber chamadas'], 'a-ligar': ['#E8A317', 'A ligar ao serviço…'], erro: ['var(--vermelho)', 'Sem ligação'], off: ['var(--linha-forte)', 'Desligada'] }[real.estadoC] || ['var(--linha-forte)', ''];
@@ -949,7 +1020,7 @@ function cChamada() {
         ${a.real ? (real.remoto ? slotCam('c-main', false, '', 'remoto') : '') : camLigada('U') ? slotCam('c-main', false, '') : ''}
         <div style="display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center;padding:0 24px">
           <svg role="img" aria-label="Vídeo do utilizador surdo" width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">${ICONES.pessoa}</svg>
-          <span style="font-size:15px">${a.real ? 'A ligar o vídeo do telemóvel…' : esc(a.nome) + ' ainda não ligou a câmara'}</span>
+          <span style="font-size:15px;line-height:1.45">${a.real ? (C.semVideo ? 'O vídeo não ligou nesta rede. Continue por mensagens, no painel abaixo.' : 'A ligar o vídeo do telemóvel…') : esc(a.nome) + ' ainda não ligou a câmara'}</span>
         </div>
         <span class="pill-escuro" style="left:16px;top:16px">${a.real ? '● Ao vivo · LGP' : 'Vídeo · LGP'}</span>
         <span class="pill-escuro" role="timer" style="right:16px;top:16px;font-size:14px"><span class="ponto" aria-hidden="true" style="width:8px;height:8px;background:#3CCB8C"></span><span data-relogio="c-seg">${fmt(C.seg)}</span></span>
@@ -1296,6 +1367,9 @@ setInterval(() => {
   // consola
   C.tick += 1;
   C.fila.forEach((c) => { c.esperaSeg += 1; if (vistaC && (c.esperaSeg === 90 || c.esperaSeg === 180)) mudou = true; });
+  const antesFila = C.fila.length;
+  C.fila = C.fila.filter((c) => !c.real || Date.now() - c.ultimo < 15000);
+  if (vistaC && C.fila.length !== antesFila) mudou = true;
   if (C.tick % 14 === 0 && C.fila.length < 5) {
     const novos = [
       { destino: 'Serviços públicos', motivo: 'Dúvida sobre IRS' }, { destino: 'Outro número', motivo: 'Falar com o empregador' },
