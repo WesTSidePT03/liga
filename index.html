@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LIGA — Linha de Interpretação Gestual Acessível</title>
+<meta name="description" content="Videointerpretação em Língua Gestual Portuguesa: liga pessoas surdas a um intérprete de LGP.">
+<meta name="theme-color" content="#0097B2">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preload" as="image" href="logo-liga.jpg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="LIGA">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --acc:#007388; --acc-escuro:#004F5F; --acc-claro:#E0F2F6; --marca:#0097B2;
+  --tinta:#14211F; --suave:#4B5A57; --linha:#D5DBD9; --linha-forte:#AEB9B6;
+  --fundo:#F6F7F4; --branco:#FFFFFF; --escuro:#0E1716; --escuro-2:#1E2B29; --escuro-3:#2E3E3B;
+  --verde:#12805C; --ambar:#B45309; --ambar-claro:#FBEFD9; --vermelho:#C4271B;
+  --sombra:0 1px 2px rgba(20,33,31,.05),0 4px 14px rgba(20,33,31,.05); --sombra-alta:0 2px 4px rgba(20,33,31,.06),0 12px 32px rgba(20,33,31,.12);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--fundo);color:var(--tinta);font-family:'Atkinson Hyperlegible','Segoe UI',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+button,input,textarea{font-family:inherit}
+button{cursor:pointer}
+:focus-visible{outline:3px solid #1D4ED8;outline-offset:2px}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+h1,h2,h3,p{margin:0}
+@keyframes pulso{0%{transform:scale(1);opacity:.55}100%{transform:scale(1.9);opacity:0}}
+@keyframes chega{0%{transform:translateY(-6px);opacity:0}100%{transform:none;opacity:1}}
+.pulso{animation:pulso 1.6s ease-out infinite}
+.chega{animation:chega .35s ease-out}
+
+/* ---------- comuns ---------- */
+.btn{min-height:48px;padding:0 18px;border-radius:12px;border:1px solid var(--linha-forte);background:var(--branco);color:var(--tinta);font-size:15px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;gap:10px}
+.btn-acc{background:var(--acc);border-color:var(--acc);color:#fff}
+.btn-perigo{background:var(--vermelho);border-color:var(--vermelho);color:#fff}
+.btn-pill{border-radius:999px}
+.btn-full{width:100%;min-height:56px;border-radius:28px;font-size:17px}
+.chip{min-height:44px;padding:0 16px;border-radius:22px;border:1px solid var(--linha-forte);background:var(--branco);color:var(--tinta);font-size:15px;font-weight:700}
+.chip[aria-pressed="true"]{background:var(--acc);border-color:var(--acc);color:#fff}
+.chip-suave[aria-pressed="true"]{background:var(--acc-claro);color:var(--acc-escuro)}
+.caixa{background:var(--branco);border:1px solid var(--linha);border-radius:20px;padding:20px;box-shadow:var(--sombra)}
+.etq{font-size:13px;color:var(--suave)}
+.campo{min-height:48px;padding:0 14px;border-radius:12px;border:1px solid var(--linha-forte);background:var(--branco);font-size:15px;color:var(--tinta)}
+textarea.campo{padding:10px 12px;min-height:80px;resize:vertical;line-height:1.45}
+.bolha{max-width:80%;padding:8px 12px;border-radius:14px;font-size:15px;line-height:1.4}
+.bolha.eu{align-self:flex-end;background:var(--acc);color:#fff}
+.bolha.outro{align-self:flex-start;background:#EEF0EF;color:var(--tinta)}
+.selo{display:inline-block;padding:3px 10px;border-radius:999px;font-size:13px;font-weight:700}
+.check{flex:none;width:24px;height:24px;border-radius:6px;border:2px solid #6B7A77;background:#fff;color:#fff;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700}
+[aria-pressed="true"] > .check{background:var(--acc);border-color:var(--acc)}
+
+/* ---------- câmaras ---------- */
+.cam-slot{position:absolute;inset:0;overflow:hidden;border-radius:inherit;background:#000}
+.cam-slot video{width:100%;height:100%;object-fit:cover;display:block}
+.cam-slot.espelho video{transform:scaleX(-1)}
+.cam-rotulo{position:absolute;left:0;right:0;bottom:8px;text-align:center;font-size:13px;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.8)}
+.cam-btn{position:absolute;left:16px;bottom:16px;display:flex;align-items:center;gap:8px;min-height:44px;padding:0 16px;border-radius:22px;border:none;background:#fff;color:var(--escuro);font-size:14px;font-weight:700}
+.cam-btn[aria-pressed="true"]{background:var(--escuro-3);color:#fff}
+.cam-erro{padding:10px 14px;border-radius:12px;background:#FDECEA;color:#8A1C12;font-size:14px;line-height:1.45}
+
+/* ---------- marca ---------- */
+.logo{display:block;flex:none;object-fit:cover;background:var(--marca)}
+.marca{display:inline-flex;align-items:center;gap:12px}
+.marca-txt{display:flex;flex-direction:column;line-height:1.05}
+.marca-nome{font-weight:700;letter-spacing:.06em;color:var(--tinta)}
+.marca-sub{font-size:16px;color:var(--suave);margin-top:4px;letter-spacing:.01em}
+.avatar{width:38px;height:38px;border-radius:19px;background:var(--acc);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
+.c-sep{width:1px;height:28px;background:var(--linha)}
+
+/* ---------- menu ---------- */
+.menu{min-height:100%;max-width:1200px;margin:0 auto;display:flex;flex-direction:column;padding:28px 32px 24px;gap:40px}
+.menu-topo{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+.menu-heroi{flex:1;display:flex;flex-wrap:wrap;align-items:center;gap:48px}
+.menu-texto{flex:1 1 440px;min-width:0;display:flex;flex-direction:column;gap:18px}
+.sobretitulo{font-size:14px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--acc)}
+.menu-h1{font-size:clamp(36px,5vw,56px);line-height:1.05;letter-spacing:-.01em}
+.menu-lead{font-size:19px;line-height:1.55;color:var(--suave);max-width:560px}
+.recursos{list-style:none;margin:8px 0 0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px 24px;font-size:15px;line-height:1.45}
+.recurso{display:flex;gap:12px;align-items:flex-start}
+.recurso-ic{flex:none;width:40px;height:40px;border-radius:12px;background:var(--acc-claro);color:var(--acc);display:flex;align-items:center;justify-content:center}
+.menu-cartoes{flex:1 1 360px;min-width:0;display:flex;flex-direction:column;gap:16px}
+.menu-cartao{text-align:left;padding:24px;border-radius:20px;border:1px solid var(--linha);background:var(--branco);color:var(--tinta);display:flex;flex-direction:column;gap:8px;box-shadow:var(--sombra);transition:border-color .15s, transform .15s, box-shadow .15s}
+.menu-cartao:hover{border-color:var(--acc);transform:translateY(-2px);box-shadow:var(--sombra-alta)}
+.menu-cartao-ic{width:52px;height:52px;border-radius:14px;background:var(--acc-claro);color:var(--acc);display:flex;align-items:center;justify-content:center;margin-bottom:6px}
+.menu-cartao-tit{font-size:21px;font-weight:700}
+.menu-cartao-txt{font-size:15px;line-height:1.5;color:var(--suave)}
+.menu-cartao-acao{display:inline-flex;align-items:center;gap:6px;margin-top:8px;font-size:15px;font-weight:700;color:var(--acc)}
+.menu-rodape{font-size:13px;color:var(--suave);text-align:center;padding-top:16px;border-top:1px solid var(--linha)}
+
+/* ---------- transições e avisos ---------- */
+@keyframes entra{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.entra{animation:entra .28s ease-out}
+#avisos{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:50;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
+.aviso{display:flex;align-items:center;gap:10px;padding:12px 18px;border-radius:14px;background:var(--tinta);color:#fff;font-size:15px;font-weight:700;box-shadow:var(--sombra-alta);animation:entra .25s ease-out;transition:opacity .3s, transform .3s}
+.aviso svg{color:#6EE7B7}
+.aviso.sai{opacity:0;transform:translateY(6px)}
+@media (prefers-reduced-motion: reduce){.entra,.aviso,.chega,.pulso{animation:none!important}.menu-cartao{transition:none}}
+
+/* ---------- ecrã de arranque ---------- */
+#arranque{position:fixed;inset:0;z-index:100;background:var(--fundo);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;transition:opacity .35s}
+#arranque.sai{opacity:0;pointer-events:none}
+
+/* ---------- utilizador ---------- */
+.u-palco{min-height:100%;display:flex;flex-direction:column;align-items:center;padding:16px 16px 24px;gap:12px;background:#E6EAE9}
+.u-barra{width:100%;max-width:960px;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.moldura{padding:12px;border-radius:56px;background:#14211F;box-shadow:0 24px 60px rgba(14,23,22,.25);zoom:var(--zoom,1)}
+.tel{width:390px;height:844px;border-radius:44px;overflow:hidden;position:relative;background:var(--fundo)}
+.tel-movel{width:100%;height:100vh;height:100dvh;border-radius:0;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+.scr{height:100%;display:flex;flex-direction:column}
+.destino{display:flex;align-items:center;gap:16px;min-height:76px;padding:12px 16px;border-radius:16px;border:1px solid var(--linha);background:var(--branco);text-align:left;color:var(--tinta);box-shadow:var(--sombra);transition:border-color .15s, transform .15s}
+.destino:hover{border-color:var(--acc)}
+.destino:active{transform:scale(.99)}
+.letra{flex:none;width:44px;height:44px;border-radius:12px;background:var(--acc-claro);color:var(--acc);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px}
+.nav{display:flex;justify-content:space-around;padding:10px 12px 28px;border-top:1px solid var(--linha);background:var(--branco)}
+.nav button{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:80px;min-height:52px;justify-content:center;font-size:13px;font-weight:700;border:none;background:transparent;color:var(--suave)}
+.nav button[aria-current="page"]{color:var(--acc)}
+.redondo{width:60px;height:60px;border-radius:30px;border:none;background:var(--escuro-3);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px}
+.redondo[aria-pressed="true"]{background:#fff;color:var(--escuro)}
+.interruptor{flex:none;position:relative;width:52px;height:32px;border-radius:16px;background:var(--linha-forte)}
+.interruptor span{position:absolute;top:3px;left:3px;width:26px;height:26px;border-radius:13px;background:#fff;transition:left .15s}
+[aria-pressed="true"] .interruptor{background:var(--acc)}
+[aria-pressed="true"] .interruptor span{left:23px}
+.opcao{display:flex;align-items:center;gap:14px;min-height:72px;padding:12px 16px;border-radius:16px;border:1px solid var(--linha);background:var(--branco);text-align:left;color:var(--tinta)}
+.voltar{width:48px;height:48px;border-radius:24px;border:none;background:transparent;color:var(--tinta);display:flex;align-items:center;justify-content:center}
+
+/* ---------- consola ---------- */
+.c-topo{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:16px;padding:14px 24px;background:var(--branco);border-bottom:1px solid var(--linha);position:sticky;top:0;z-index:5}
+.c-tab{min-height:44px;padding:0 16px;border-radius:10px;border:none;background:transparent;color:var(--suave);font-size:15px;font-weight:700}
+.c-tab[aria-current="page"]{background:var(--acc-claro);color:var(--acc-escuro)}
+.c-main{max-width:1440px;margin:0 auto;padding:24px;display:flex;flex-wrap:wrap;gap:24px;align-items:flex-start}
+.c-fila{flex:1 1 300px;min-width:0;display:flex;flex-direction:column;gap:12px}
+.c-centro{flex:999 1 680px;min-width:0;display:flex;flex-direction:column;gap:20px}
+.linha{display:flex;flex-wrap:wrap;gap:20px}
+.video{border-radius:20px;background:var(--escuro);color:#B9C7C4;position:relative;display:flex;align-items:center;justify-content:center}
+.pill-escuro{position:absolute;padding:6px 12px;border-radius:999px;background:var(--escuro-2);color:#fff;font-size:13px;display:flex;align-items:center;gap:8px;font-variant-numeric:tabular-nums}
+.ponto{width:10px;height:10px;border-radius:5px;display:inline-block;flex:none}
+.estado-btn{display:flex;align-items:center;gap:10px;min-height:44px;padding:0 18px;border-radius:22px;border:1px solid var(--linha);font-size:15px;font-weight:700;color:var(--tinta)}
+table{width:100%;min-width:760px;border-collapse:collapse;font-size:15px}
+th{padding:14px 16px;font-size:13px;color:var(--suave);text-align:left;background:var(--fundo)}
+td{padding:14px 16px;border-top:1px solid #E6EAE9}
+.termo{padding:5px 10px;border-radius:8px;background:var(--acc-claro);color:var(--acc-escuro);font-size:14px}
+.modal-fundo{position:fixed;inset:0;z-index:20;background:rgba(14,23,22,.55);display:flex;justify-content:center;align-items:flex-start;padding:100px 16px 16px;overflow:auto}
+.passo{display:flex;align-items:flex-start;gap:12px;min-height:52px;padding:10px 12px;border-radius:12px;border:1px solid var(--linha);background:#fff;color:var(--tinta);text-align:left;font-size:16px;line-height:1.4}
+.passo[aria-pressed="true"]{background:#EEF7F3}
+.passo .num{flex:none;width:26px;height:26px;border-radius:13px;border:2px solid #6B7A77;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700}
+.passo[aria-pressed="true"] .num{background:var(--verde);border-color:var(--verde);color:#fff}
+</style>
+</head>
+<body>
+<div id="arranque" aria-hidden="true">
+  <img src="logo-liga.jpg" alt="" width="380" height="380" style="width:min(380px,80vw);height:auto;border-radius:48px;box-shadow:0 12px 40px rgba(0,80,95,.25)">
+</div>
+<div id="root"></div>
+<!-- Bibliotecas para a ligação real (precisam de internet; sem elas a app funciona em modo demonstração) -->
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
